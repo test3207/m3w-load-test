@@ -8,6 +8,7 @@
     "test:full": "node scripts/run-test.cjs",
     "test:quick": "node scripts/run-test.cjs --skip-k6",
     "test:capacity": "k6 run k6/capacity.js",
+    "monitor": "node scripts/monitor.cjs",
     "seed": "node scripts/seed.cjs",
     "cleanup": "node scripts/cleanup.cjs",
     "cleanup:full": "node scripts/cleanup.cjs --full",

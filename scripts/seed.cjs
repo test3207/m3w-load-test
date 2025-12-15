@@ -234,13 +234,14 @@ function generateTestAudio() {
   // This creates a proper MP3 that M3W can process
   const mp3Data = generateMinimalMp3();
   fs.writeFileSync(testAudioPath, mp3Data);
-  console.log('✅ Generated test audio: test-audio.mp3 (5 sec white noise)');
+  const sizeMB = (mp3Data.length / 1024 / 1024).toFixed(1);
+  console.log(`✅ Generated test audio: test-audio.mp3 (3 min, ${sizeMB}MB)`);
   return testAudioPath;
 }
 
 /**
  * Generate a minimal valid MP3 file with white noise
- * Creates ~5 seconds of audio at 128kbps
+ * Creates ~3 minutes of audio at 128kbps (~3MB, realistic file size)
  */
 function generateMinimalMp3() {
   // MP3 frame header for 128kbps, 44100Hz, stereo
@@ -249,9 +250,10 @@ function generateMinimalMp3() {
   
   // Each MP3 frame at 128kbps/44100Hz is 417 bytes (418 with padding)
   // Frame duration = 1152 samples / 44100Hz = 26.12ms
-  // For 5 seconds: 5000ms / 26.12ms ≈ 191 frames
+  // For 3 minutes (180s): 180000ms / 26.12ms ≈ 6893 frames
+  // Size: ~6893 * 417 = ~2.87MB
   const frameDataSize = 417 - 4; // minus header
-  const numFrames = 191;
+  const numFrames = 6893;
   
   // ID3v2 header with basic metadata
   const id3Header = createId3Tag({

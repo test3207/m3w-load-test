@@ -186,6 +186,15 @@ async function main() {
         const k6Version = runSync(`${k6Cmd} version`);
         console.log(`   k6 version: ${k6Version}`);
         
+        // Start resource monitor in background
+        console.log('   Starting resource monitor...');
+        const monitorProc = spawn('node', ['scripts/monitor.cjs'], {
+          cwd: PROJECT_ROOT,
+          stdio: 'ignore',
+          detached: true,
+        });
+        monitorProc.unref();
+        
         // Load .env.test into process.env
         const fs = require('fs');
         const envFile = path.join(PROJECT_ROOT, '.env.test');
@@ -200,6 +209,34 @@ async function main() {
         }
         
         await run(k6Cmd, ['run', 'k6/capacity.js']);
+        
+        // Stop monitor and show results
+        console.log('\n\n📊 Resource usage summary:');
+        try {
+          // Kill monitor process
+          const pidFile = path.join(PROJECT_ROOT, '.monitor.pid');
+          if (fs.existsSync(pidFile)) {
+            const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim());
+            try {
+              process.kill(pid, 'SIGTERM');
+            } catch {}
+            // Wait a bit for it to write results
+            await new Promise(r => setTimeout(r, 2000));
+          }
+          
+          // Show results
+          const resultsFile = path.join(PROJECT_ROOT, 'results', 'resource-usage.json');
+          if (fs.existsSync(resultsFile)) {
+            const results = JSON.parse(fs.readFileSync(resultsFile, 'utf-8'));
+            const summary = results.summary;
+            console.log(`   Duration: ${(summary.duration / 1000).toFixed(1)}s | Samples: ${summary.sampleCount}`);
+            for (const [name, data] of Object.entries(summary.containers)) {
+              console.log(`   ${name}: CPU avg=${data.cpu.avg.toFixed(1)}% max=${data.cpu.max.toFixed(1)}% | Mem avg=${data.memoryMB.avg.toFixed(0)}MB max=${data.memoryMB.max.toFixed(0)}MB`);
+            }
+          }
+        } catch (e) {
+          console.log('   (monitor data not available)');
+        }
       }
     } else {
       console.log('\n\n⏭️  Step 4: Skipping k6 test (--skip-k6 flag)');

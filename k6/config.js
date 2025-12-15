@@ -20,14 +20,15 @@ export const thresholds = {
   'http_req_failed': ['rate<0.01'],
 };
 
-// Load stages for capacity test
+// Load stages for capacity test (find breaking point)
 export const capacityStages = [
-  { duration: '1m', target: 1 },    // Warm-up
-  { duration: '3m', target: 10 },   // Baseline
-  { duration: '3m', target: 25 },   // Load
-  { duration: '3m', target: 50 },   // Stress
-  { duration: '3m', target: 100 },  // Peak
-  { duration: '2m', target: 0 },    // Cool-down
+  { duration: '1m', target: 10 },    // Warm-up
+  { duration: '2m', target: 50 },    // Baseline
+  { duration: '2m', target: 100 },   // Load
+  { duration: '2m', target: 200 },   // Stress
+  { duration: '2m', target: 300 },   // High stress
+  { duration: '2m', target: 500 },   // Peak
+  { duration: '2m', target: 0 },     // Cool-down
 ];
 
 // User behavior weights
