@@ -188,12 +188,23 @@ async function main() {
         
         // Start resource monitor in background
         console.log('   Starting resource monitor...');
-        const monitorProc = spawn('node', ['scripts/monitor.cjs'], {
-          cwd: PROJECT_ROOT,
-          stdio: 'ignore',
-          detached: false,
-          windowsHide: true,
-        });
+        let monitorProc;
+        if (process.platform === 'win32') {
+          // Windows: use start /B to hide window
+          monitorProc = spawn('cmd', ['/c', 'start', '/B', 'node', 'scripts/monitor.cjs'], {
+            cwd: PROJECT_ROOT,
+            stdio: 'ignore',
+            shell: false,
+            windowsHide: true,
+          });
+        } else {
+          monitorProc = spawn('node', ['scripts/monitor.cjs'], {
+            cwd: PROJECT_ROOT,
+            stdio: 'ignore',
+            detached: true,
+          });
+          monitorProc.unref();
+        }
         
         // Load .env.test into process.env
         const fs = require('fs');
