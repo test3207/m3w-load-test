@@ -92,6 +92,30 @@ function runSync(command) {
   }
 }
 
+// Find k6 executable (handles Windows PATH not being updated after install)
+function findK6() {
+  // Try PATH first
+  const k6Version = runSync('k6 version');
+  if (k6Version) return 'k6';
+  
+  // On Windows, check common install locations
+  if (process.platform === 'win32') {
+    const fs = require('fs');
+    const commonPaths = [
+      'C:\\Program Files\\k6\\k6.exe',
+      'C:\\Program Files (x86)\\k6\\k6.exe',
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'k6', 'k6.exe'),
+    ];
+    for (const p of commonPaths) {
+      if (fs.existsSync(p)) {
+        return `"${p}"`;
+      }
+    }
+  }
+  
+  return null;
+}
+
 async function waitForHealth(url, maxAttempts = 60, interval = 2000) {
   console.log(`\n⏳ Waiting for ${url} to be healthy...`);
   
@@ -153,34 +177,29 @@ async function main() {
     if (!SKIP_K6) {
       console.log('\n\n🔥 Step 4: Running k6 load test...');
       
-      // Check if k6 is installed
-      const k6Version = runSync('k6 version');
-      if (!k6Version) {
-        console.error('❌ k6 not found. Please install k6: https://k6.io/docs/get-started/installation/');
+      // Find k6 executable
+      const k6Cmd = findK6();
+      if (!k6Cmd) {
+        console.error('❌ k6 not found. Please run: npm run setup');
         console.log('   Skipping k6 test...');
       } else {
+        const k6Version = runSync(`${k6Cmd} version`);
         console.log(`   k6 version: ${k6Version}`);
         
-        // Source .env.test and run k6
-        // On Windows we need to handle this differently
-        const isWindows = process.platform === 'win32';
-        if (isWindows) {
-          // Read .env.test and set env vars
-          const fs = require('fs');
-          const envFile = path.join(PROJECT_ROOT, '.env.test');
-          if (fs.existsSync(envFile)) {
-            const envContent = fs.readFileSync(envFile, 'utf-8');
-            for (const line of envContent.split('\n')) {
-              const [key, ...valueParts] = line.split('=');
-              if (key && valueParts.length > 0) {
-                process.env[key.trim()] = valueParts.join('=').trim();
-              }
+        // Load .env.test into process.env
+        const fs = require('fs');
+        const envFile = path.join(PROJECT_ROOT, '.env.test');
+        if (fs.existsSync(envFile)) {
+          const envContent = fs.readFileSync(envFile, 'utf-8');
+          for (const line of envContent.split('\n')) {
+            const [key, ...valueParts] = line.split('=');
+            if (key && valueParts.length > 0) {
+              process.env[key.trim()] = valueParts.join('=').trim();
             }
           }
-          await run('k6', ['run', 'k6/capacity.js']);
-        } else {
-          await run('bash', ['-c', 'source .env.test && k6 run k6/capacity.js']);
         }
+        
+        await run(k6Cmd, ['run', 'k6/capacity.js']);
       }
     } else {
       console.log('\n\n⏭️  Step 4: Skipping k6 test (--skip-k6 flag)');

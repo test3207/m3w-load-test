@@ -4,6 +4,7 @@
   "description": "Load testing suite for M3W",
   "private": true,
   "scripts": {
+    "setup": "node scripts/setup.cjs",
     "test:full": "node scripts/run-test.cjs",
     "test:quick": "node scripts/run-test.cjs --skip-k6",
     "test:capacity": "k6 run k6/capacity.js",
