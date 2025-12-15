@@ -1,0 +1,17 @@
+# Test results and reports
+results/
+*.html
+*.json
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp

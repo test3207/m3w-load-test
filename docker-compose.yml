@@ -1,0 +1,78 @@
+# M3W Load Test Environment
+# Complete test environment with M3W + PostgreSQL + MinIO
+
+services:
+  # M3W All-in-One container
+  m3w:
+    image: ghcr.io/test3207/m3w:latest
+    container_name: m3w-load-test
+    ports:
+      - "4000:4000"
+    environment:
+      # Database
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/m3w
+      
+      # MinIO
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: m3w
+      MINIO_USE_SSL: "false"
+      
+      # Auth (optional - for testing with auth)
+      # GITHUB_CLIENT_ID: ""
+      # GITHUB_CLIENT_SECRET: ""
+      JWT_SECRET: load-test-secret-key
+      
+      # Demo mode off for load testing
+      DEMO_MODE: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL database
+  postgres:
+    image: postgres:16-alpine
+    container_name: m3w-load-test-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: m3w
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # MinIO object storage
+  minio:
+    image: minio/minio:latest
+    container_name: m3w-load-test-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  minio_data:
