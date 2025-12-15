@@ -16,6 +16,7 @@ This repository contains load testing infrastructure to:
 m3w-load-test/
 ├── docker-compose.yml       # Complete test environment (M3W + PostgreSQL + MinIO)
 ├── scripts/
+│   ├── run-test.cjs         # Full test runner (start → seed → k6 → cleanup → stop)
 │   ├── seed.cjs             # Test data preparation
 │   └── cleanup.cjs          # Cleanup script
 ├── k6/
@@ -24,6 +25,16 @@ m3w-load-test/
 ├── results/                 # Test reports (gitignored)
 └── README.md
 ```
+
+## Resource Limits
+
+Test environment simulates a typical VPS (4 CPU / 4GB RAM):
+
+| Service | CPU | Memory |
+|---------|-----|--------|
+| M3W | 2 cores | 2GB |
+| PostgreSQL | 1 core | 1GB |
+| MinIO | 1 core | 1GB |
 
 ## Test Design
 
@@ -60,25 +71,50 @@ m3w-load-test/
 ## Quick Start
 
 ```bash
-# 1. Clone and install dependencies
+# Clone and install
 git clone https://github.com/test3207/m3w-load-test.git
 cd m3w-load-test
 npm install
 
-# 2. Start test environment
-npm run docker:up
+# Run full test (start containers → seed → k6 → cleanup → stop)
+npm run test:full
 
-# 3. Seed test data (fully automatic - creates user, generates token, etc.)
-npm run seed
-
-# 4. Run capacity test
-npm run test:capacity
-
-# 5. Cleanup (optional)
-npm run cleanup
+# Or with podman
+npm run test:full -- --podman
 ```
 
-That's it! No manual token retrieval needed.
+That's it! One command does everything.
+
+### Options
+
+```bash
+npm run test:full              # Full test cycle with docker (auto-detected)
+npm run test:full -- --podman  # Force use podman
+npm run test:full -- --docker  # Force use docker
+npm run test:full -- --keep    # Keep containers running after test
+npm run test:full -- --skip-k6 # Skip k6 test (just verify seed/cleanup)
+npm run test:quick             # Quick test without k6 (verify setup only)
+```
+
+### Manual Steps (if needed)
+
+```bash
+# Start containers manually
+npm run docker:up    # or: npm run podman:up
+
+# Seed test data
+npm run seed
+
+# Run k6 test
+npm run test:capacity
+
+# Cleanup
+npm run cleanup       # Remove test playlists only
+npm run cleanup:full  # Remove everything + test user
+
+# Stop containers
+npm run docker:down   # or: npm run podman:down
+```
 
 ### Testing Against Existing M3W Instance
 
