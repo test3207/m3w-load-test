@@ -74,8 +74,8 @@ function listeningPhase(songId) {
   // Simulate listening for 30 seconds, update progress
   sleep(30);
   
-  // Update progress
-  const progressRes = http.post(
+  // Update progress (PUT method)
+  const progressRes = http.put(
     `${config.baseUrl}${endpoints.progress}`,
     JSON.stringify({
       songId: songId,

@@ -52,6 +52,6 @@ export const endpoints = {
   songs: (libraryId) => `/api/libraries/${libraryId}/songs`,
   stream: (songId) => `/api/songs/${songId}/stream`,
   
-  // Progress
-  progress: '/api/progress',
+  // Progress (PUT method)
+  progress: '/api/player/progress',
 };
