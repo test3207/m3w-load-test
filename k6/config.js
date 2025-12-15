@@ -6,6 +6,8 @@
 export const config = {
   baseUrl: __ENV.BASE_URL || 'http://localhost:4000',
   testUserToken: __ENV.TEST_USER_TOKEN || '',
+  testLibraryId: __ENV.TEST_LIBRARY_ID || '',
+  testSongId: __ENV.TEST_SONG_ID || '',
 };
 
 // Thresholds for success criteria

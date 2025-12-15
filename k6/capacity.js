@@ -129,8 +129,12 @@ export default function() {
     startupPhase();
   } else if (rand < behavior.startup + behavior.listening) {
     // Listening phase (85%)
-    // TODO: Replace with actual song ID from seeded data
-    const testSongId = __ENV.TEST_SONG_ID || 'test-song-id';
+    const testSongId = config.testSongId;
+    if (!testSongId) {
+      console.warn('TEST_SONG_ID not set, skipping listening phase');
+      sleep(1);
+      return;
+    }
     listeningPhase(testSongId);
   } else {
     // Managing phase (10%)

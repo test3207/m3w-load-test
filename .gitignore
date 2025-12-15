@@ -1,11 +1,11 @@
 # Test results and reports
 results/
 *.html
-*.json
 
 # Environment
 .env
 .env.local
+.env.test
 
 # OS
 .DS_Store
@@ -15,3 +15,10 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Audio fixtures (too large for git)
+fixtures/*.mp3
+fixtures/*.flac
+fixtures/*.m4a
+fixtures/*.wav
+fixtures/*.ogg
