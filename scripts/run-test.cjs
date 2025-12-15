@@ -186,28 +186,55 @@ async function main() {
         const k6Version = runSync(`${k6Cmd} version`);
         console.log(`   k6 version: ${k6Version}`);
         
-        // Start resource monitor in background
+        // Start resource monitor inline (no subprocess)
         console.log('   Starting resource monitor...');
-        let monitorProc;
-        if (process.platform === 'win32') {
-          // Windows: use start /B to hide window
-          monitorProc = spawn('cmd', ['/c', 'start', '/B', 'node', 'scripts/monitor.cjs'], {
-            cwd: PROJECT_ROOT,
-            stdio: 'ignore',
-            shell: false,
-            windowsHide: true,
-          });
-        } else {
-          monitorProc = spawn('node', ['scripts/monitor.cjs'], {
-            cwd: PROJECT_ROOT,
-            stdio: 'ignore',
-            detached: true,
-          });
-          monitorProc.unref();
-        }
+        const fs = require('fs');
+        const monitorSamples = [];
+        const monitorStart = Date.now();
+        
+        const monitorInterval = setInterval(() => {
+          try {
+            const output = execSync(
+              `${runtime} stats --no-stream --format "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"`,
+              { encoding: 'utf-8', timeout: 5000 }
+            );
+            
+            const timestamp = Date.now() - monitorStart;
+            const containers = {};
+            
+            for (const line of output.trim().split('\n')) {
+              if (!line.includes('m3w-load-test')) continue;
+              
+              const parts = line.split('\t');
+              if (parts.length < 3) continue;
+              
+              const name = parts[0].replace('m3w-load-test-', '').replace('m3w-load-test', 'm3w');
+              const cpuMatch = parts[1].match(/([\d.]+)/);
+              const cpu = cpuMatch ? parseFloat(cpuMatch[1]) : 0;
+              
+              const memMatch = parts[2].match(/([\d.]+)(\w+)/);
+              let memMB = 0;
+              if (memMatch) {
+                const val = parseFloat(memMatch[1]);
+                const unit = memMatch[2].toLowerCase();
+                if (unit.includes('gib') || unit.includes('gb')) memMB = val * 1024;
+                else if (unit.includes('mib') || unit.includes('mb')) memMB = val;
+                else if (unit.includes('kib') || unit.includes('kb')) memMB = val / 1024;
+                else memMB = val;
+              }
+              
+              containers[name] = { cpu, memMB };
+            }
+            
+            if (Object.keys(containers).length > 0) {
+              monitorSamples.push({ timestamp, containers });
+            }
+          } catch (e) {
+            // Container might not be ready or stopping
+          }
+        }, 2000);
         
         // Load .env.test into process.env
-        const fs = require('fs');
         const envFile = path.join(PROJECT_ROOT, '.env.test');
         if (fs.existsSync(envFile)) {
           const envContent = fs.readFileSync(envFile, 'utf-8');
@@ -221,32 +248,63 @@ async function main() {
         
         await run(k6Cmd, ['run', 'k6/capacity.js']);
         
-        // Stop monitor and show results
+        // Stop monitor and calculate results
+        clearInterval(monitorInterval);
+        
         console.log('\n\n📊 Resource usage summary:');
-        try {
-          // Kill monitor process
-          const pidFile = path.join(PROJECT_ROOT, '.monitor.pid');
-          if (fs.existsSync(pidFile)) {
-            const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim());
-            try {
-              process.kill(pid, 'SIGTERM');
-            } catch {}
-            // Wait a bit for it to write results
-            await new Promise(r => setTimeout(r, 2000));
-          }
-          
-          // Show results
-          const resultsFile = path.join(PROJECT_ROOT, 'results', 'resource-usage.json');
-          if (fs.existsSync(resultsFile)) {
-            const results = JSON.parse(fs.readFileSync(resultsFile, 'utf-8'));
-            const summary = results.summary;
-            console.log(`   Duration: ${(summary.duration / 1000).toFixed(1)}s | Samples: ${summary.sampleCount}`);
-            for (const [name, data] of Object.entries(summary.containers)) {
-              console.log(`   ${name}: CPU avg=${data.cpu.avg.toFixed(1)}% max=${data.cpu.max.toFixed(1)}% | Mem avg=${data.memoryMB.avg.toFixed(0)}MB max=${data.memoryMB.max.toFixed(0)}MB`);
+        if (monitorSamples.length === 0) {
+          console.log('   (no samples collected)');
+        } else {
+          // Calculate statistics
+          const stats = {};
+          for (const sample of monitorSamples) {
+            for (const [name, data] of Object.entries(sample.containers)) {
+              if (!stats[name]) {
+                stats[name] = { cpuSamples: [], memSamples: [] };
+              }
+              stats[name].cpuSamples.push(data.cpu);
+              stats[name].memSamples.push(data.memMB);
             }
           }
-        } catch (e) {
-          console.log('   (monitor data not available)');
+          
+          const duration = monitorSamples[monitorSamples.length - 1].timestamp;
+          console.log(`   Duration: ${(duration / 1000).toFixed(1)}s | Samples: ${monitorSamples.length}`);
+          
+          for (const [name, data] of Object.entries(stats)) {
+            const cpuAvg = data.cpuSamples.reduce((a, b) => a + b, 0) / data.cpuSamples.length;
+            const cpuMax = Math.max(...data.cpuSamples);
+            const memAvg = data.memSamples.reduce((a, b) => a + b, 0) / data.memSamples.length;
+            const memMax = Math.max(...data.memSamples);
+            
+            console.log(`   ${name}: CPU avg=${cpuAvg.toFixed(1)}% max=${cpuMax.toFixed(1)}% | Mem avg=${memAvg.toFixed(0)}MB max=${memMax.toFixed(0)}MB`);
+          }
+          
+          // Capacity estimate
+          if (stats['m3w']) {
+            const cpuMax = Math.max(...stats['m3w'].cpuSamples);
+            const memMax = Math.max(...stats['m3w'].memSamples);
+            const memLimit = 2048; // 2GB limit
+            
+            console.log('\n💡 Capacity estimate (M3W container):');
+            console.log(`   At 500 VUs: CPU max ${cpuMax.toFixed(1)}%, Memory max ${memMax.toFixed(0)}MB`);
+            if (cpuMax > 0) {
+              console.log(`   Theoretical max VUs (CPU): ~${Math.floor(500 * (100 / cpuMax))}`);
+            }
+            if (memMax > 0) {
+              console.log(`   Theoretical max VUs (Memory): ~${Math.floor(500 * (memLimit / memMax))}`);
+            }
+          }
+          
+          // Save raw data
+          const resultsDir = path.join(PROJECT_ROOT, 'results');
+          if (!fs.existsSync(resultsDir)) {
+            fs.mkdirSync(resultsDir, { recursive: true });
+          }
+          fs.writeFileSync(
+            path.join(resultsDir, 'resource-usage.json'),
+            JSON.stringify({ samples: monitorSamples, stats }, null, 2)
+          );
+          console.log(`\n   Raw data saved to: results/resource-usage.json`);
         }
       }
     } else {
