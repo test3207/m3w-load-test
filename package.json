@@ -1,0 +1,23 @@
+{
+  "name": "m3w-load-test",
+  "version": "0.1.0",
+  "description": "Load testing suite for M3W",
+  "private": true,
+  "scripts": {
+    "seed": "node scripts/seed.cjs",
+    "cleanup": "node scripts/cleanup.cjs",
+    "cleanup:full": "node scripts/cleanup.cjs --full",
+    "test:capacity": "k6 run k6/capacity.js",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
+  },
+  "dependencies": {
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

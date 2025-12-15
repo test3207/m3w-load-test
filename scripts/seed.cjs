@@ -1,25 +1,101 @@
 /**
  * Seed test data for load testing
  * 
- * Creates:
- * - Test library with sample songs
- * - Test playlists
+ * FULLY AUTOMATIC - No manual steps required!
  * 
- * Prerequisites:
- * - M3W instance running at BASE_URL
- * - Valid TEST_USER_TOKEN (JWT from authenticated user)
- * - Sample audio files in ./fixtures/ directory
+ * This script will:
+ * 1. Connect to PostgreSQL directly and create test user
+ * 2. Generate a valid JWT token
+ * 3. Create test library with sample songs
+ * 4. Create test playlists
+ * 
+ * Environment variables:
+ * - BASE_URL: M3W API URL (default: http://localhost:4000)
+ * - DATABASE_URL: PostgreSQL connection string (default: from docker-compose)
+ * - JWT_SECRET: JWT secret (default: load-test-secret-key)
+ * 
+ * Usage:
+ *   npm run seed
+ *   # or
+ *   node scripts/seed.cjs
  */
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const jwt = require('jsonwebtoken');
+const { Client } = require('pg');
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:4000';
-const TOKEN = process.env.TEST_USER_TOKEN;
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://m3w:m3w@localhost:5432/m3w?schema=public';
+const JWT_SECRET = process.env.JWT_SECRET || 'load-test-secret-key';
 
 // Output file for test configuration
 const OUTPUT_FILE = path.join(__dirname, '..', '.env.test');
+
+// Test user - stable ID so we don't create duplicates
+const TEST_USER = {
+  id: 'load-test-user-001',
+  email: 'loadtest@m3w.local',
+  name: 'Load Test User',
+};
+
+// Token will be generated
+let TOKEN = null;
+
+function generateAccessToken(user) {
+  return jwt.sign(
+    {
+      userId: user.id,
+      email: user.email,
+      type: 'access',
+    },
+    JWT_SECRET,
+    { expiresIn: '24h' }
+  );
+}
+
+/**
+ * Create test user directly in PostgreSQL database
+ */
+async function createTestUserInDB() {
+  console.log('🗄️  Connecting to database...');
+  
+  const client = new Client({ connectionString: DATABASE_URL });
+  
+  try {
+    await client.connect();
+    console.log('✅ Database connected');
+    
+    // Check if user exists
+    const checkResult = await client.query(
+      'SELECT id, email, name FROM "User" WHERE id = $1 OR email = $2',
+      [TEST_USER.id, TEST_USER.email]
+    );
+    
+    if (checkResult.rows.length > 0) {
+      const existingUser = checkResult.rows[0];
+      console.log(`✅ Test user already exists: ${existingUser.email}`);
+      TEST_USER.id = existingUser.id;
+      return existingUser;
+    }
+    
+    // Create user
+    console.log('👤 Creating test user in database...');
+    const now = new Date().toISOString();
+    
+    await client.query(
+      `INSERT INTO "User" (id, email, name, "createdAt", "updatedAt", "cacheAllEnabled") 
+       VALUES ($1, $2, $3, $4, $4, false)`,
+      [TEST_USER.id, TEST_USER.email, TEST_USER.name, now]
+    );
+    
+    console.log(`✅ Test user created: ${TEST_USER.email}`);
+    return TEST_USER;
+    
+  } finally {
+    await client.end();
+  }
+}
 
 async function apiRequest(endpoint, options = {}) {
   const url = `${BASE_URL}${endpoint}`;
@@ -51,14 +127,14 @@ async function checkHealth() {
   console.log('✅ Service is healthy');
 }
 
-async function checkAuth() {
-  console.log('🔐 Checking authentication...');
+async function verifyAuth() {
+  console.log('🔐 Verifying authentication...');
   const result = await apiRequest('/api/auth/me');
-  if (!result.success) {
-    throw new Error('Authentication failed');
+  if (result.success) {
+    console.log(`✅ Authenticated as: ${result.data.name || result.data.email}`);
+    return result.data;
   }
-  console.log(`✅ Authenticated as: ${result.data.name || result.data.username}`);
-  return result.data;
+  throw new Error('Authentication failed');
 }
 
 async function getOrCreateTestLibrary() {
@@ -99,7 +175,6 @@ async function uploadTestAudio(libraryId, filePath) {
   const fileBuffer = fs.readFileSync(filePath);
   const boundary = '----FormBoundary' + Date.now();
   
-  // Build multipart form data manually
   const parts = [];
   parts.push(`--${boundary}\r\n`);
   parts.push(`Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n`);
@@ -153,39 +228,37 @@ async function writeEnvFile(config) {
 async function seed() {
   console.log('🌱 M3W Load Test - Seed Script');
   console.log('================================');
-  console.log(`Target: ${BASE_URL}`);
+  console.log(`Target API: ${BASE_URL}`);
+  console.log(`Database:   ${DATABASE_URL.replace(/:[^:@]+@/, ':***@')}`);
+  console.log(`JWT Secret: ${JWT_SECRET.substring(0, 10)}...`);
   console.log('');
   
-  // Validate token
-  if (!TOKEN) {
-    console.error('❌ Error: TEST_USER_TOKEN environment variable is required');
-    console.log('\nTo get a token:');
-    console.log('1. Log in to M3W in your browser');
-    console.log('2. Open DevTools > Application > Cookies');
-    console.log('3. Copy the value of "access_token" cookie');
-    console.log('4. Set: export TEST_USER_TOKEN=<token>');
-    process.exit(1);
-  }
-  
   try {
-    // Step 1: Health check
+    // Step 1: Create test user directly in database
+    await createTestUserInDB();
+    
+    // Step 2: Generate JWT token
+    TOKEN = generateAccessToken(TEST_USER);
+    console.log(`🔑 JWT token generated for: ${TEST_USER.email}`);
+    
+    // Step 3: Health check
     await checkHealth();
     
-    // Step 2: Verify auth
-    await checkAuth();
+    // Step 4: Verify auth works
+    await verifyAuth();
     
-    // Step 3: Get or create test library
+    // Step 5: Get or create test library
     const library = await getOrCreateTestLibrary();
     
-    // Step 4: Check for existing songs
+    // Step 6: Check for existing songs
     let songs = await getSongsInLibrary(library.id);
     console.log(`📊 Library has ${songs.length} songs`);
     
-    // Step 5: Upload test audio files if fixtures exist
+    // Step 7: Upload test audio files if fixtures exist
     const fixturesDir = path.join(__dirname, '..', 'fixtures');
     if (fs.existsSync(fixturesDir)) {
       const audioFiles = fs.readdirSync(fixturesDir)
-        .filter(f => f.endsWith('.mp3') || f.endsWith('.flac') || f.endsWith('.m4a'));
+        .filter(f => /\.(mp3|flac|m4a|ogg|wav)$/i.test(f));
       
       if (audioFiles.length > 0) {
         console.log(`\n📁 Found ${audioFiles.length} audio files in fixtures/`);
@@ -193,27 +266,26 @@ async function seed() {
           const filePath = path.join(fixturesDir, file);
           await uploadTestAudio(library.id, filePath);
         }
-        // Refresh song list
         songs = await getSongsInLibrary(library.id);
       }
     } else {
       console.log('\n💡 Tip: Add audio files to fixtures/ directory for automatic upload');
     }
     
-    // Step 6: Create test playlist if we have songs
+    // Step 8: Create test playlist if we have songs
     if (songs.length > 0) {
       const existingPlaylists = (await apiRequest('/api/playlists')).data || [];
       const testPlaylist = existingPlaylists.find(p => p.name === 'Load Test Playlist');
       
       if (!testPlaylist) {
-        const songIds = songs.slice(0, 10).map(s => s.id); // First 10 songs
+        const songIds = songs.slice(0, 10).map(s => s.id);
         await createTestPlaylist('Load Test Playlist', songIds);
       } else {
         console.log(`✅ Test playlist already exists: ${testPlaylist.id}`);
       }
     }
     
-    // Step 7: Write env file for k6
+    // Step 9: Write env file for k6
     const testSongId = songs.length > 0 ? songs[0].id : '';
     const envConfig = {
       BASE_URL,
@@ -225,17 +297,23 @@ async function seed() {
     await writeEnvFile(envConfig);
     
     // Summary
-    console.log('\n✅ Seed completed!');
+    console.log('\n✅ Seed completed successfully!');
     console.log('================================');
-    console.log(`Library ID: ${library.id}`);
-    console.log(`Songs: ${songs.length}`);
-    console.log(`Test Song ID: ${testSongId || '(none - upload audio files)'}`);
-    console.log('\nTo run load test:');
-    console.log('  source .env.test');
-    console.log('  k6 run k6/capacity.js');
+    console.log(`Test User:   ${TEST_USER.email}`);
+    console.log(`Library ID:  ${library.id}`);
+    console.log(`Songs:       ${songs.length}`);
+    console.log(`Test Song:   ${testSongId || '(none - add audio files to fixtures/)'}`);
+    console.log('\n🚀 Ready to run load test:');
+    console.log('   npm run test:capacity');
+    console.log('   # or');
+    console.log('   source .env.test && k6 run k6/capacity.js');
     
   } catch (error) {
     console.error('\n❌ Seed failed:', error.message);
+    if (error.message.includes('ECONNREFUSED')) {
+      console.error('\n💡 Make sure the M3W services are running:');
+      console.error('   npm run docker:up');
+    }
     process.exit(1);
   }
 }
