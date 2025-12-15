@@ -18,8 +18,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
+
+// Seed for random generation - use command line arg or timestamp
+const SEED = process.argv.find(a => a.startsWith('--seed='))?.split('=')[1] || Date.now().toString();
+console.log(`Using seed: ${SEED}\n`);
 
 // File sizes to generate (MB)
 const FILE_SIZES = [
@@ -29,12 +34,16 @@ const FILE_SIZES = [
   { name: 'xlarge-100mb', sizeMB: 100 },
 ];
 
+// Number of variants - only need 1 now since k6 modifies bytes at runtime
+// This keeps memory usage minimal (~5MB for 5MB file)
+const VARIANTS_COUNT = parseInt(process.env.VARIANTS_COUNT || '1');
+
 /**
  * Generate a minimal MP3-like file
  * Uses valid MP3 frame header + random data to create somewhat valid MP3
  * that upload endpoint will accept
  */
-function generateMp3File(sizeMB) {
+function generateMp3File(sizeMB, variant = 0) {
   const targetBytes = sizeMB * 1024 * 1024;
   
   // MP3 frame header for 128kbps, 44100Hz, stereo
@@ -45,8 +54,8 @@ function generateMp3File(sizeMB) {
   const numFrames = Math.ceil(targetBytes / frameSize);
   const chunks = [];
   
-  // Add minimal ID3v2 header
-  chunks.push(createMinimalId3Tag(sizeMB));
+  // Add minimal ID3v2 header with unique title
+  chunks.push(createMinimalId3Tag(sizeMB, variant));
   
   // Generate frames with random data
   console.log(`  Generating ${numFrames} frames...`);
@@ -61,9 +70,10 @@ function generateMp3File(sizeMB) {
       const offset = i * frameSize;
       // Frame header
       frameHeader.copy(batchBuffer, offset);
-      // Random data for frame content
+      // Use crypto for random data (seeded by hash of seed + variant + position)
+      const hash = crypto.createHash('md5').update(`${SEED}-${sizeMB}-${variant}-${batch}-${i}`).digest();
       for (let j = 4; j < frameSize; j++) {
-        batchBuffer[offset + j] = Math.floor(Math.random() * 256);
+        batchBuffer[offset + j] = hash[j % hash.length];
       }
     }
     
@@ -76,8 +86,9 @@ function generateMp3File(sizeMB) {
 /**
  * Create minimal ID3v2.3 tag for metadata
  */
-function createMinimalId3Tag(sizeMB) {
-  const title = `Upload Test ${sizeMB}MB`;
+function createMinimalId3Tag(sizeMB, variant) {
+  // Each file must have a unique title to avoid server-side deduplication
+  const title = `Test ${SEED}-${sizeMB}MB-v${variant}`;
   const artist = 'M3W Load Test';
   
   const frames = [];
@@ -156,42 +167,38 @@ async function generateFiles() {
   }
   
   for (const { name, sizeMB } of filesToGenerate) {
-    const filePath = path.join(FIXTURES_DIR, `${name}.bin`);
+    // Generate multiple variants to avoid deduplication (server uses content hash)
+    // Always regenerate with current seed to ensure unique content
+    console.log(`📦 Generating ${name}-*.bin (${sizeMB}MB x ${VARIANTS_COUNT})...`);
     
-    // Skip if already exists
-    if (fs.existsSync(filePath)) {
-      const stats = fs.statSync(filePath);
-      const existingSizeMB = (stats.size / 1024 / 1024).toFixed(1);
-      console.log(`✅ ${name}.bin already exists (${existingSizeMB}MB)`);
-      continue;
+    for (let variant = 0; variant < VARIANTS_COUNT; variant++) {
+      const fileName = `${name}-${variant}.bin`;
+      const filePath = path.join(FIXTURES_DIR, fileName);
+      
+      const startTime = Date.now();
+      const data = generateMp3File(sizeMB, variant);
+      fs.writeFileSync(filePath, data);
+      
+      const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+      process.stdout.write(`   [${variant + 1}/${VARIANTS_COUNT}] `);
+      console.log(`${fileName} (${duration}s)`);
     }
-    
-    console.log(`📦 Generating ${name}.bin (${sizeMB}MB)...`);
-    const startTime = Date.now();
-    
-    const data = generateMp3File(sizeMB);
-    fs.writeFileSync(filePath, data);
-    
-    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    const actualSizeMB = (data.length / 1024 / 1024).toFixed(1);
-    console.log(`   ✅ Done: ${actualSizeMB}MB in ${duration}s\n`);
+    console.log('');
   }
   
   console.log('\n📋 Generated files:');
   for (const { name, sizeMB } of filesToGenerate) {
-    const filePath = path.join(FIXTURES_DIR, `${name}.bin`);
+    const filePath = path.join(FIXTURES_DIR, `${name}-0.bin`);
     if (fs.existsSync(filePath)) {
       const stats = fs.statSync(filePath);
       const actualSize = (stats.size / 1024 / 1024).toFixed(1);
-      console.log(`   fixtures/${name}.bin - ${actualSize}MB`);
+      console.log(`   fixtures/${name}-[0-${VARIANTS_COUNT-1}].bin - ${actualSize}MB each`);
     }
   }
   
   console.log('\n💡 Usage:');
-  console.log('   # Run upload test with 50MB file:');
-  console.log('   k6 run k6/upload.js \\');
-  console.log('     --env TEST_FILE_PATH=fixtures/large-50mb.bin \\');
-  console.log('     --env FILE_SIZE_BYTES=52428800');
+  console.log('   npm run test:upload             # Full test with 5MB files');
+  console.log('   npm run test:upload -- --size 50  # Test with 50MB files');
 }
 
 generateFiles().catch(console.error);

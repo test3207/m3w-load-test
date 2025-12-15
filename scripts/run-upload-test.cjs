@@ -1,237 +1,391 @@
+#!/usr/bin/env node
 /**
- * Run Upload Stress Test
+ * Upload stress test runner
  * 
- * Orchestrates the complete upload stress test workflow:
- * 1. Ensure test files exist (generate if needed)
- * 2. Load environment from .env.test
- * 3. Start resource monitoring
- * 4. Run k6 upload test
- * 5. Generate report
- * 
- * Options:
- *   --quick       Run with smaller file (5MB) and shorter duration
- *   --size N      Specify file size in MB (5, 20, 50, 100)
- *   --concurrent  Target concurrent uploads (default: 10)
- *   --skip-gen    Skip file generation (assume files exist)
+ * Runs the full upload stress test cycle:
+ * 1. Start container environment (docker/podman)
+ * 2. Wait for services to be ready
+ * 3. Seed test data
+ * 4. Generate test files (if needed)
+ * 5. Run k6 upload stress test
+ * 6. Cleanup test data
+ * 7. Stop and remove containers
  * 
  * Usage:
- *   npm run test:upload           # Full test with 50MB file
- *   npm run test:upload:quick     # Quick test with 5MB file
+ *   npm run test:upload                    # Run with default (5MB file)
+ *   npm run test:upload -- --size 50       # Use 50MB file (5/20/50/100)
+ *   npm run test:upload -- --keep          # Keep containers running after test
+ *   npm run test:upload -- --podman        # Force use podman
+ *   npm run test:upload -- --docker        # Force use docker
  */
 
 const { spawn, execSync } = require('child_process');
-const fs = require('fs');
 const path = require('path');
+const fs = require('fs');
 
-const ROOT_DIR = path.join(__dirname, '..');
-const ENV_FILE = path.join(ROOT_DIR, '.env.test');
-const FIXTURES_DIR = path.join(ROOT_DIR, 'fixtures');
-const RESULTS_DIR = path.join(ROOT_DIR, 'results');
+// Configuration
+const PROJECT_ROOT = path.join(__dirname, '..');
+const KEEP_CONTAINERS = process.argv.includes('--keep');
+const FORCE_PODMAN = process.argv.includes('--podman');
+const FORCE_DOCKER = process.argv.includes('--docker');
 
-// File size mapping
+// Parse --size argument
+function getUploadSize() {
+  const idx = process.argv.indexOf('--size');
+  if (idx !== -1 && process.argv[idx + 1]) {
+    return parseInt(process.argv[idx + 1]);
+  }
+  return 5; // Default 5MB
+}
+
 const FILE_MAP = {
-  5: { name: 'small-5mb.bin', bytes: 5 * 1024 * 1024 },
-  20: { name: 'medium-20mb.bin', bytes: 20 * 1024 * 1024 },
-  50: { name: 'large-50mb.bin', bytes: 50 * 1024 * 1024 },
-  100: { name: 'xlarge-100mb.bin', bytes: 100 * 1024 * 1024 },
+  5: { base: 'small-5mb', bytes: 5 * 1024 * 1024 },
+  20: { base: 'medium-20mb', bytes: 20 * 1024 * 1024 },
+  50: { base: 'large-50mb', bytes: 50 * 1024 * 1024 },
+  100: { base: 'xlarge-100mb', bytes: 100 * 1024 * 1024 },
 };
 
-// Parse command line arguments
-function parseArgs() {
-  const args = process.argv.slice(2);
-  const options = {
-    quick: args.includes('--quick'),
-    skipGen: args.includes('--skip-gen'),
-    size: 50, // Default 50MB
-    concurrent: 10,
-  };
-  
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--size' && args[i + 1]) {
-      options.size = parseInt(args[i + 1]);
-    }
-    if (args[i] === '--concurrent' && args[i + 1]) {
-      options.concurrent = parseInt(args[i + 1]);
-    }
-  }
-  
-  // Quick mode uses 5MB file
-  if (options.quick) {
-    options.size = 5;
-  }
-  
-  return options;
-}
+const VARIANTS_COUNT = 1;
 
-// Load environment from .env.test
-function loadEnv() {
-  if (!fs.existsSync(ENV_FILE)) {
-    throw new Error('.env.test not found! Run `npm run seed` first.');
-  }
+// Detect container runtime
+function detectRuntime() {
+  if (FORCE_PODMAN) return 'podman';
+  if (FORCE_DOCKER) return 'docker';
   
-  const content = fs.readFileSync(ENV_FILE, 'utf-8');
-  const env = {};
-  
-  for (const line of content.split('\n')) {
-    const match = line.match(/^([^=]+)=(.*)$/);
-    if (match) {
-      env[match[1]] = match[2];
+  try {
+    execSync('docker --version', { stdio: 'ignore' });
+    return 'docker';
+  } catch {
+    try {
+      execSync('podman --version', { stdio: 'ignore' });
+      return 'podman';
+    } catch {
+      return null;
     }
   }
-  
-  return env;
 }
 
-// Ensure test file exists
-function ensureTestFile(sizeMB, skipGen) {
-  const fileInfo = FILE_MAP[sizeMB];
-  if (!fileInfo) {
-    throw new Error(`Invalid size: ${sizeMB}MB. Available: ${Object.keys(FILE_MAP).join(', ')}MB`);
-  }
-  
-  const filePath = path.join(FIXTURES_DIR, fileInfo.name);
-  
-  if (fs.existsSync(filePath)) {
-    console.log(`✅ Test file exists: ${fileInfo.name}`);
-    return { path: filePath, bytes: fileInfo.bytes };
-  }
-  
-  if (skipGen) {
-    throw new Error(`Test file not found: ${fileInfo.name}. Remove --skip-gen to generate.`);
-  }
-  
-  console.log(`📦 Generating test file: ${fileInfo.name}...`);
-  execSync(`node scripts/generate-upload-files.cjs --size ${sizeMB}`, {
-    cwd: ROOT_DIR,
-    stdio: 'inherit',
-  });
-  
-  return { path: filePath, bytes: fileInfo.bytes };
-}
-
-// Start resource monitor in background
-function startMonitor() {
-  const monitorScript = path.join(__dirname, 'monitor.cjs');
-  
-  if (!fs.existsSync(monitorScript)) {
-    console.log('⚠️  Monitor script not found, skipping resource monitoring');
-    return null;
-  }
-  
-  const monitor = spawn('node', [monitorScript], {
-    cwd: ROOT_DIR,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-  });
-  
-  monitor.stdout.on('data', (data) => {
-    // Just log to console, don't clutter output
-    const line = data.toString().trim();
-    if (line.includes('CPU') || line.includes('Memory')) {
-      console.log(`📊 ${line}`);
+function getComposeCommand(runtime) {
+  if (runtime === 'podman') {
+    try {
+      execSync('podman-compose --version', { stdio: 'ignore' });
+      return 'podman-compose';
+    } catch {
+      return 'podman compose';
     }
-  });
-  
-  console.log(`📊 Resource monitor started (PID: ${monitor.pid})`);
-  return monitor;
+  }
+  return 'docker compose';
 }
 
-// Run k6 upload test
-function runK6Test(testFile, env, options) {
+function run(command, args = [], options = {}) {
   return new Promise((resolve, reject) => {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const outputFile = path.join(RESULTS_DIR, `upload-${timestamp}.json`);
+    console.log(`\n$ ${command} ${args.join(' ')}`);
     
-    // Ensure results directory exists
-    if (!fs.existsSync(RESULTS_DIR)) {
-      fs.mkdirSync(RESULTS_DIR, { recursive: true });
-    }
-    
-    const k6Args = [
-      'run',
-      'k6/upload.js',
-      '--env', `BASE_URL=${env.BASE_URL || 'http://localhost:4000'}`,
-      '--env', `TEST_USER_TOKEN=${env.TEST_USER_TOKEN}`,
-      '--env', `TEST_LIBRARY_ID=${env.TEST_LIBRARY_ID}`,
-      '--env', `TEST_FILE_PATH=${path.relative(ROOT_DIR, testFile.path)}`,
-      '--env', `FILE_SIZE_BYTES=${testFile.bytes}`,
-      '--env', `CONCURRENT_UPLOADS=${options.concurrent}`,
-      '--out', `json=${outputFile}`,
-    ];
-    
-    // Quick mode: shorter duration
-    if (options.quick) {
-      k6Args.push('--duration', '1m');
-      k6Args.push('--vus', '5');
-    }
-    
-    console.log('\n🚀 Starting k6 upload test...');
-    console.log(`   File: ${path.basename(testFile.path)} (${(testFile.bytes / 1024 / 1024).toFixed(0)}MB)`);
-    console.log(`   Output: ${path.basename(outputFile)}`);
-    console.log('');
-    
-    const k6 = spawn('k6', k6Args, {
-      cwd: ROOT_DIR,
+    const proc = spawn(command, args, {
+      cwd: PROJECT_ROOT,
       stdio: 'inherit',
       shell: true,
+      ...options,
     });
     
-    k6.on('close', (code) => {
+    proc.on('close', (code) => {
       if (code === 0) {
-        resolve(outputFile);
+        resolve(code);
       } else {
-        reject(new Error(`k6 exited with code ${code}`));
+        reject(new Error(`Command failed with code ${code}`));
       }
     });
     
-    k6.on('error', (err) => {
-      reject(new Error(`Failed to start k6: ${err.message}`));
-    });
+    proc.on('error', reject);
   });
 }
 
-// Main function
-async function main() {
-  console.log('🔥 M3W Upload Stress Test');
-  console.log('=========================\n');
-  
-  const options = parseArgs();
-  console.log(`📋 Options:`);
-  console.log(`   File size: ${options.size}MB`);
-  console.log(`   Concurrent: ${options.concurrent}`);
-  console.log(`   Quick mode: ${options.quick}`);
-  console.log('');
-  
+function runSync(command) {
   try {
-    // Load environment
-    const env = loadEnv();
-    console.log(`✅ Environment loaded from .env.test`);
-    console.log(`   Base URL: ${env.BASE_URL || 'http://localhost:4000'}`);
-    console.log(`   Library: ${env.TEST_LIBRARY_ID}`);
-    console.log('');
-    
-    // Ensure test file exists
-    const testFile = ensureTestFile(options.size, options.skipGen);
-    
-    // Start monitor (optional)
-    const monitor = startMonitor();
-    
-    // Run k6 test
-    const outputFile = await runK6Test(testFile, env, options);
-    
-    // Stop monitor
-    if (monitor) {
-      monitor.kill();
-      console.log('📊 Resource monitor stopped');
+    return execSync(command, { cwd: PROJECT_ROOT, encoding: 'utf-8' }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function findK6() {
+  const k6Version = runSync('k6 version');
+  if (k6Version) return 'k6';
+  
+  if (process.platform === 'win32') {
+    const commonPaths = [
+      'C:\\Program Files\\k6\\k6.exe',
+      'C:\\Program Files (x86)\\k6\\k6.exe',
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'k6', 'k6.exe'),
+    ];
+    for (const p of commonPaths) {
+      if (fs.existsSync(p)) {
+        return `"${p}"`;
+      }
+    }
+  }
+  
+  return null;
+}
+
+async function waitForHealth(url, maxAttempts = 60, interval = 2000) {
+  console.log(`\n⏳ Waiting for ${url} to be healthy...`);
+  
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) {
+        console.log(`✅ Service is healthy!`);
+        return true;
+      }
+    } catch {
+      // Service not ready yet
     }
     
-    console.log('\n✅ Upload stress test completed');
-    console.log(`📄 Results: ${outputFile}`);
-    
-  } catch (error) {
-    console.error(`\n❌ Error: ${error.message}`);
+    process.stdout.write('.');
+    await new Promise(r => setTimeout(r, interval));
+  }
+  
+  throw new Error(`Service did not become healthy within ${maxAttempts * interval / 1000}s`);
+}
+
+async function main() {
+  const uploadSize = getUploadSize();
+  const fileInfo = FILE_MAP[uploadSize] || FILE_MAP[5];
+  
+  console.log('🔥 M3W Upload Stress Test');
+  console.log('=========================');
+  
+  // Step 0: Detect runtime
+  const runtime = detectRuntime();
+  if (!runtime) {
+    console.error('❌ Neither docker nor podman found. Please install one of them.');
     process.exit(1);
   }
+  
+  const compose = getComposeCommand(runtime);
+  console.log(`\n📦 Using: ${runtime} (${compose})`);
+  console.log(`   Keep containers: ${KEEP_CONTAINERS}`);
+  console.log(`   File size: ${uploadSize}MB (${fileInfo.base}-*.bin x ${VARIANTS_COUNT})`);
+  
+  let exitCode = 0;
+  
+  try {
+    // Step 1: Start containers
+    console.log('\n\n📦 Step 1: Starting containers...');
+    await run(compose, ['up', '-d']);
+    
+    // Step 2: Wait for M3W to be healthy
+    console.log('\n\n⏳ Step 2: Waiting for services...');
+    await waitForHealth('http://localhost:4000/health');
+    console.log('   Waiting for database migrations...');
+    await new Promise(r => setTimeout(r, 15000));
+    
+    // Step 3: Seed test data
+    console.log('\n\n🌱 Step 3: Seeding test data...');
+    await run('node', ['scripts/seed.cjs']);
+    
+    // Step 3.5: Clear songs and files from database (to avoid deduplication conflicts)
+    console.log('\n\n🧹 Step 3.5: Clearing songs and files from database...');
+    const { Client } = require('pg');
+    const dbUrl = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/m3w';
+    const dbClient = new Client({ connectionString: dbUrl });
+    try {
+      await dbClient.connect();
+      
+      // Delete all songs first (foreign key to files)
+      const songsResult = await dbClient.query('DELETE FROM songs RETURNING id');
+      console.log(`   Deleted ${songsResult.rowCount} songs`);
+      
+      // Delete all files
+      const filesResult = await dbClient.query('DELETE FROM files RETURNING id');
+      console.log(`   Deleted ${filesResult.rowCount} files`);
+      
+      // Reset library song counts
+      await dbClient.query('UPDATE libraries SET "songCount" = 0');
+      console.log('   ✅ Database cleared');
+    } catch (err) {
+      console.warn(`   ⚠️ Database clear failed: ${err.message}`);
+    } finally {
+      await dbClient.end();
+    }
+    
+    // Step 4: Generate test files (always regenerate with fresh seed to avoid deduplication)
+    console.log('\n\n📦 Step 4: Generating test files with unique content...');
+    const testSeed = Date.now().toString();
+    console.log(`   Using seed: ${testSeed}`);
+    console.log(`   Generating ${uploadSize}MB test files (x${VARIANTS_COUNT})...`);
+    await run('node', ['scripts/generate-upload-files.cjs', '--size', String(uploadSize), `--seed=${testSeed}`]);
+    
+    // Step 5: Run k6 upload stress test
+    console.log('\n\n🔥 Step 5: Running upload stress test...');
+    
+    const k6Cmd = findK6();
+    if (!k6Cmd) {
+      console.error('❌ k6 not found. Please run: npm run setup');
+      throw new Error('k6 not found');
+    }
+    
+    const k6Version = runSync(`${k6Cmd} version`);
+    console.log(`   k6 version: ${k6Version}`);
+    
+    // Start resource monitor
+    console.log('   Starting resource monitor...');
+    const monitorSamples = [];
+    const monitorStart = Date.now();
+    
+    const monitorInterval = setInterval(() => {
+      try {
+        const output = execSync(
+          `${runtime} stats --no-stream --format "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"`,
+          { encoding: 'utf-8', timeout: 5000 }
+        );
+        
+        const timestamp = Date.now() - monitorStart;
+        const containers = {};
+        
+        for (const line of output.trim().split('\n')) {
+          if (!line.includes('m3w-load-test')) continue;
+          
+          const parts = line.split('\t');
+          if (parts.length < 3) continue;
+          
+          const name = parts[0].replace('m3w-load-test-', '').replace('m3w-load-test', 'm3w');
+          const cpuMatch = parts[1].match(/([\d.]+)/);
+          const cpu = cpuMatch ? parseFloat(cpuMatch[1]) : 0;
+          
+          const memMatch = parts[2].match(/([\d.]+)(\w+)/);
+          let memMB = 0;
+          if (memMatch) {
+            const val = parseFloat(memMatch[1]);
+            const unit = memMatch[2].toLowerCase();
+            if (unit.includes('gib') || unit.includes('gb')) memMB = val * 1024;
+            else if (unit.includes('mib') || unit.includes('mb')) memMB = val;
+            else if (unit.includes('kib') || unit.includes('kb')) memMB = val / 1024;
+            else memMB = val;
+          }
+          
+          containers[name] = { cpu, memMB };
+        }
+        
+        if (Object.keys(containers).length > 0) {
+          monitorSamples.push({ timestamp, containers });
+        }
+      } catch (e) {
+        // Container might not be ready or stopping
+      }
+    }, 2000);
+    
+    // Load .env.test into process.env
+    const envFile = path.join(PROJECT_ROOT, '.env.test');
+    if (fs.existsSync(envFile)) {
+      const envContent = fs.readFileSync(envFile, 'utf-8');
+      for (const line of envContent.split('\n')) {
+        const [key, ...valueParts] = line.split('=');
+        if (key && valueParts.length > 0) {
+          process.env[key.trim()] = valueParts.join('=').trim();
+        }
+      }
+    }
+    
+    // Run k6 upload test
+    await run(k6Cmd, [
+      'run', 'k6/upload.js',
+      '--env', `TEST_FILE_BASE=fixtures/${fileInfo.base}`,
+      '--env', `FILE_SIZE_BYTES=${fileInfo.bytes}`,
+      '--env', `VARIANTS_COUNT=${VARIANTS_COUNT}`,
+    ]);
+    
+    // Stop monitor and calculate results
+    clearInterval(monitorInterval);
+    
+    console.log('\n\n📊 Resource usage summary:');
+    if (monitorSamples.length === 0) {
+      console.log('   (no samples collected)');
+    } else {
+      const stats = {};
+      for (const sample of monitorSamples) {
+        for (const [name, data] of Object.entries(sample.containers)) {
+          if (!stats[name]) {
+            stats[name] = { cpuSamples: [], memSamples: [] };
+          }
+          stats[name].cpuSamples.push(data.cpu);
+          stats[name].memSamples.push(data.memMB);
+        }
+      }
+      
+      const duration = monitorSamples[monitorSamples.length - 1].timestamp;
+      console.log(`   Duration: ${(duration / 1000).toFixed(1)}s | Samples: ${monitorSamples.length}`);
+      
+      for (const [name, data] of Object.entries(stats)) {
+        const cpuAvg = data.cpuSamples.reduce((a, b) => a + b, 0) / data.cpuSamples.length;
+        const cpuMax = Math.max(...data.cpuSamples);
+        const memAvg = data.memSamples.reduce((a, b) => a + b, 0) / data.memSamples.length;
+        const memMax = Math.max(...data.memSamples);
+        
+        console.log(`   ${name}: CPU avg=${cpuAvg.toFixed(1)}% max=${cpuMax.toFixed(1)}% | Mem avg=${memAvg.toFixed(0)}MB max=${memMax.toFixed(0)}MB`);
+      }
+      
+      // Memory analysis for upload test
+      if (stats['m3w']) {
+        const memSamples = stats['m3w'].memSamples;
+        const memBaseline = memSamples[0];
+        const memMax = Math.max(...memSamples);
+        const memFinal = memSamples[memSamples.length - 1];
+        const memLimit = 2048; // 2GB limit
+        
+        console.log('\n💡 Memory analysis (M3W container):');
+        console.log(`   Baseline: ${memBaseline.toFixed(0)}MB`);
+        console.log(`   Peak: ${memMax.toFixed(0)}MB (+${(memMax - memBaseline).toFixed(0)}MB)`);
+        console.log(`   Final: ${memFinal.toFixed(0)}MB`);
+        
+        const memRecovered = memFinal < memBaseline * 1.2;
+        console.log(`   Recovery: ${memRecovered ? '✅ OK' : '⚠️ Memory not fully released'}`);
+        
+        if (memMax > memLimit * 0.8) {
+          console.log(`   ⚠️ Peak memory > 80% of limit (${memLimit}MB)`);
+        }
+      }
+      
+      // Save raw data
+      const resultsDir = path.join(PROJECT_ROOT, 'results');
+      if (!fs.existsSync(resultsDir)) {
+        fs.mkdirSync(resultsDir, { recursive: true });
+      }
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      fs.writeFileSync(
+        path.join(resultsDir, `upload-${timestamp}.json`),
+        JSON.stringify({ uploadSize, samples: monitorSamples, stats }, null, 2)
+      );
+      console.log(`\n   Raw data saved to: results/upload-${timestamp}.json`);
+    }
+    
+    // Step 6: Cleanup test data
+    console.log('\n\n🧹 Step 6: Cleaning up test data...');
+    await run('node', ['scripts/cleanup.cjs', '--full']);
+    
+    console.log('\n\n✅ Upload stress test completed!');
+    
+  } catch (error) {
+    console.error('\n\n❌ Test failed:', error.message);
+    exitCode = 1;
+  } finally {
+    // Step 7: Stop containers (unless --keep flag)
+    if (!KEEP_CONTAINERS) {
+      console.log('\n\n📦 Step 7: Stopping containers...');
+      try {
+        await run(compose, ['down', '-v']);
+        console.log('✅ Containers stopped and removed');
+      } catch (e) {
+        console.error('⚠️  Failed to stop containers:', e.message);
+      }
+    } else {
+      console.log('\n\n📦 Step 7: Keeping containers running (--keep flag)');
+      console.log('   To stop manually: npm run docker:down');
+    }
+  }
+  
+  process.exit(exitCode);
 }
 
 main();

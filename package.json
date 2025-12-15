@@ -9,7 +9,7 @@
     "test:quick": "node scripts/run-test.cjs --skip-k6",
     "test:capacity": "k6 run k6/capacity.js",
     "test:upload": "node scripts/run-upload-test.cjs",
-    "test:upload:quick": "node scripts/run-upload-test.cjs --quick",
+    "benchmark:upload": "node scripts/benchmark-upload.cjs",
     "generate:upload-files": "node scripts/generate-upload-files.cjs",
     "monitor": "node scripts/monitor.cjs",
     "seed": "node scripts/seed.cjs",

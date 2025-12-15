@@ -17,15 +17,11 @@ m3w-load-test/
 ├── docker-compose.yml       # Complete test environment (M3W + PostgreSQL + MinIO)
 ├── scripts/
 │   ├── run-test.cjs         # Full test runner (start → seed → k6 → cleanup → stop)
-│   ├── run-upload-test.cjs  # Upload stress test runner
-│   ├── generate-upload-files.cjs  # Generate large test files
 │   ├── seed.cjs             # Test data preparation
 │   └── cleanup.cjs          # Cleanup script
 ├── k6/
 │   ├── config.js            # Shared configuration
-│   ├── capacity.js          # User capacity test
-│   └── upload.js            # Upload stress test
-├── fixtures/                # Test files (gitignored)
+│   └── capacity.js          # User capacity test
 ├── results/                 # Test reports (gitignored)
 └── README.md
 ```
@@ -99,40 +95,6 @@ npm run test:full -- --keep    # Keep containers running after test
 npm run test:full -- --skip-k6 # Skip k6 test (just verify seed/cleanup)
 npm run test:quick             # Quick test without k6 (verify setup only)
 ```
-
-## Upload Stress Test
-
-Tests memory stability of stream-based upload implementation ([Issue #121](https://github.com/test3207/m3w/issues/121)).
-
-```bash
-# Generate test files (5MB, 20MB, 50MB, 100MB)
-npm run generate:upload-files
-
-# Run upload stress test (default: 50MB file)
-npm run test:upload
-
-# Quick test with 5MB file
-npm run test:upload:quick
-
-# Custom size and concurrency
-npm run test:upload -- --size 100 --concurrent 20
-```
-
-### Upload Test Stages
-
-| Stage | VUs | Duration | Purpose |
-|-------|-----|----------|---------|
-| Warm-up | 1 | 30s | Single upload baseline |
-| Low | 5 | 1m | Low concurrency |
-| Medium | 10 | 2m | Medium concurrency |
-| High | 20 | 2m | Stress test |
-| Cool-down | 0 | 1m | Memory recovery check |
-
-### Success Criteria
-
-- Upload success rate > 95%
-- No memory leak (memory returns to baseline after test)
-- Throughput > 1 Mbps average
 
 ### Manual Steps (if needed)
 
