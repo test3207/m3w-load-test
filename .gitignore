@@ -28,4 +28,5 @@ fixtures/*.mp3
 fixtures/*.flac
 fixtures/*.m4a
 fixtures/*.wav
+fixtures/*.bin
 fixtures/*.ogg
