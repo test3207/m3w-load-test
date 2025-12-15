@@ -11,6 +11,9 @@ results/
 .env.local
 .env.test
 
+# Generated test audio
+fixtures/test-audio.mp3
+
 # OS
 .DS_Store
 Thumbs.db

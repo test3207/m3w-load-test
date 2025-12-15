@@ -216,6 +216,121 @@ async function createTestPlaylist(name, songIds = []) {
   return result.data;
 }
 
+/**
+ * Generate a test audio file using ffmpeg (if available)
+ * Creates a 5-second silent MP3 for testing
+ */
+function generateTestAudio() {
+  const testAudioPath = path.join(__dirname, '..', 'fixtures', 'test-audio.mp3');
+  
+  // Check if already exists
+  if (fs.existsSync(testAudioPath)) {
+    return testAudioPath;
+  }
+  
+  console.log('🎵 Generating test audio file...');
+  
+  // Generate a minimal valid MP3 file with white noise
+  // This creates a proper MP3 that M3W can process
+  const mp3Data = generateMinimalMp3();
+  fs.writeFileSync(testAudioPath, mp3Data);
+  console.log('✅ Generated test audio: test-audio.mp3 (5 sec white noise)');
+  return testAudioPath;
+}
+
+/**
+ * Generate a minimal valid MP3 file with white noise
+ * Creates ~5 seconds of audio at 128kbps
+ */
+function generateMinimalMp3() {
+  // MP3 frame header for 128kbps, 44100Hz, stereo
+  // MPEG Audio Layer 3, 128kbps, 44100Hz, stereo, no padding
+  const frameHeader = Buffer.from([0xFF, 0xFB, 0x90, 0x00]);
+  
+  // Each MP3 frame at 128kbps/44100Hz is 417 bytes (418 with padding)
+  // Frame duration = 1152 samples / 44100Hz = 26.12ms
+  // For 5 seconds: 5000ms / 26.12ms ≈ 191 frames
+  const frameDataSize = 417 - 4; // minus header
+  const numFrames = 191;
+  
+  // ID3v2 header with basic metadata
+  const id3Header = createId3Tag({
+    title: 'Load Test Track',
+    artist: 'M3W Load Test',
+    album: 'Test Album',
+  });
+  
+  const frames = [];
+  frames.push(id3Header);
+  
+  for (let i = 0; i < numFrames; i++) {
+    // Create frame with white noise data
+    const frameData = Buffer.alloc(frameDataSize);
+    for (let j = 0; j < frameDataSize; j++) {
+      // Generate pseudo-random noise that sounds like white noise when decoded
+      frameData[j] = Math.floor(Math.random() * 256);
+    }
+    frames.push(Buffer.concat([frameHeader, frameData]));
+  }
+  
+  return Buffer.concat(frames);
+}
+
+/**
+ * Create a minimal ID3v2.3 tag
+ */
+function createId3Tag(metadata) {
+  const frames = [];
+  
+  // TIT2 - Title
+  if (metadata.title) {
+    frames.push(createId3Frame('TIT2', metadata.title));
+  }
+  // TPE1 - Artist
+  if (metadata.artist) {
+    frames.push(createId3Frame('TPE1', metadata.artist));
+  }
+  // TALB - Album
+  if (metadata.album) {
+    frames.push(createId3Frame('TALB', metadata.album));
+  }
+  
+  const framesBuffer = Buffer.concat(frames);
+  const size = framesBuffer.length;
+  
+  // ID3v2.3 header
+  const header = Buffer.from([
+    0x49, 0x44, 0x33, // "ID3"
+    0x03, 0x00,       // Version 2.3
+    0x00,             // Flags
+    // Size (syncsafe integer)
+    (size >> 21) & 0x7F,
+    (size >> 14) & 0x7F,
+    (size >> 7) & 0x7F,
+    size & 0x7F,
+  ]);
+  
+  return Buffer.concat([header, framesBuffer]);
+}
+
+function createId3Frame(frameId, text) {
+  const textBuffer = Buffer.from(text, 'utf8');
+  const size = textBuffer.length + 1; // +1 for encoding byte
+  
+  return Buffer.concat([
+    Buffer.from(frameId, 'ascii'),
+    Buffer.from([
+      (size >> 24) & 0xFF,
+      (size >> 16) & 0xFF,
+      (size >> 8) & 0xFF,
+      size & 0xFF,
+      0x00, 0x00, // Flags
+      0x00,       // Encoding: ISO-8859-1
+    ]),
+    textBuffer,
+  ]);
+}
+
 async function writeEnvFile(config) {
   const content = Object.entries(config)
     .map(([key, value]) => `${key}=${value}`)
@@ -256,20 +371,28 @@ async function seed() {
     
     // Step 7: Upload test audio files if fixtures exist
     const fixturesDir = path.join(__dirname, '..', 'fixtures');
-    if (fs.existsSync(fixturesDir)) {
-      const audioFiles = fs.readdirSync(fixturesDir)
-        .filter(f => /\.(mp3|flac|m4a|ogg|wav)$/i.test(f));
-      
-      if (audioFiles.length > 0) {
-        console.log(`\n📁 Found ${audioFiles.length} audio files in fixtures/`);
-        for (const file of audioFiles) {
-          const filePath = path.join(fixturesDir, file);
-          await uploadTestAudio(library.id, filePath);
-        }
-        songs = await getSongsInLibrary(library.id);
+    
+    // First, try to generate test audio if none exists
+    const audioFiles = fs.readdirSync(fixturesDir)
+      .filter(f => /\.(mp3|flac|m4a|ogg|wav)$/i.test(f));
+    
+    if (audioFiles.length === 0) {
+      // No audio files, try to generate one
+      const generatedPath = generateTestAudio();
+      if (generatedPath) {
+        audioFiles.push(path.basename(generatedPath));
       }
+    }
+    
+    if (audioFiles.length > 0) {
+      console.log(`\n📁 Found ${audioFiles.length} audio files in fixtures/`);
+      for (const file of audioFiles) {
+        const filePath = path.join(fixturesDir, file);
+        await uploadTestAudio(library.id, filePath);
+      }
+      songs = await getSongsInLibrary(library.id);
     } else {
-      console.log('\n💡 Tip: Add audio files to fixtures/ directory for automatic upload');
+      console.log('\n💡 Tip: Install ffmpeg or add audio files to fixtures/ directory');
     }
     
     // Step 8: Create test playlist if we have songs
