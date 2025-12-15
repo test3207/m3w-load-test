@@ -26,7 +26,7 @@ const jwt = require('jsonwebtoken');
 const { Client } = require('pg');
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:4000';
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://m3w:m3w@localhost:5432/m3w?schema=public';
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/m3w';
 const JWT_SECRET = process.env.JWT_SECRET || 'load-test-secret-key';
 
 // Output file for test configuration
@@ -68,7 +68,7 @@ async function createTestUserInDB() {
     
     // Check if user exists
     const checkResult = await client.query(
-      'SELECT id, email, name FROM "User" WHERE id = $1 OR email = $2',
+      'SELECT id, email, name FROM users WHERE id = $1 OR email = $2',
       [TEST_USER.id, TEST_USER.email]
     );
     
@@ -84,7 +84,7 @@ async function createTestUserInDB() {
     const now = new Date().toISOString();
     
     await client.query(
-      `INSERT INTO "User" (id, email, name, "createdAt", "updatedAt", "cacheAllEnabled") 
+      `INSERT INTO users (id, email, name, "createdAt", "updatedAt", "cacheAllEnabled") 
        VALUES ($1, $2, $3, $4, $4, false)`,
       [TEST_USER.id, TEST_USER.email, TEST_USER.name, now]
     );

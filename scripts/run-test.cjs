@@ -140,9 +140,10 @@ async function main() {
     console.log('\n\n⏳ Step 2: Waiting for services...');
     await waitForHealth('http://localhost:4000/health');
     
-    // Give it a couple more seconds for database migrations
+    // TODO: Switch to /ready endpoint once M3W image with #179 is released
+    // await waitForHealth('http://localhost:4000/ready', 60, 3000);
     console.log('   Waiting for database migrations...');
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise(r => setTimeout(r, 15000));
     
     // Step 3: Seed test data
     console.log('\n\n🌱 Step 3: Seeding test data...');

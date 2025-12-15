@@ -4,7 +4,7 @@
 services:
   # M3W All-in-One container
   m3w:
-    image: ghcr.io/test3207/m3w:latest
+    image: ghcr.io/test3207/m3w:v1.0.0
     container_name: m3w-load-test
     ports:
       - "4000:4000"
@@ -51,6 +51,8 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: m3w-load-test-postgres
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres

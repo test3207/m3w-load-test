@@ -17,7 +17,7 @@ const jwt = require('jsonwebtoken');
 const { Client } = require('pg');
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:4000';
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://m3w:m3w@localhost:5432/m3w?schema=public';
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/m3w';
 const JWT_SECRET = process.env.JWT_SECRET || 'load-test-secret-key';
 const FULL_CLEANUP = process.argv.includes('--full');
 
@@ -97,7 +97,7 @@ async function deleteTestUserFromDB() {
     await client.connect();
     
     const result = await client.query(
-      'DELETE FROM "User" WHERE id = $1 OR email = $2 RETURNING id',
+      'DELETE FROM users WHERE id = $1 OR email = $2 RETURNING id',
       [TEST_USER.id, TEST_USER.email]
     );
     
