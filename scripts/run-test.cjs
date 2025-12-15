@@ -191,9 +191,9 @@ async function main() {
         const monitorProc = spawn('node', ['scripts/monitor.cjs'], {
           cwd: PROJECT_ROOT,
           stdio: 'ignore',
-          detached: true,
+          detached: false,
+          windowsHide: true,
         });
-        monitorProc.unref();
         
         // Load .env.test into process.env
         const fs = require('fs');
